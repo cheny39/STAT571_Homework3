@@ -81,24 +81,124 @@ county_data <- fread("data/covid_county.csv")
 # county-level COVID case and death
 covid_rate <- fread("data/covid_rates.csv")
 # county-level lockdown dates 
-# covid_intervention <- fread("data/covid_intervention.csv")
+covid_intervention <- fread("data/covid_intervention.csv")
 ```
 
 ## Understand the data
 
 The detailed description of variables is in `Appendix 1: Data description`. Please get familiar with the variables. Summarize the two data briefly.
+```{r echo=TRUE, warning = FALSE}
+head(covid_intervention)
+```
+```{r echo=TRUE, warning = FALSE}
+head(county_data)
+# summary(county_data)
+```
+```{r echo=TRUE, warning = FALSE}
+head(covid_rate)
+summary(covid_rate)
+```
 
+    The three datasets are "county_data", "covid_intervention" and "covid_rate". The first two share in common that each ovservation is a US county. County_data is an extremely wide dataset, it has 205 variables describing each county's socioeconomic demographics. Most variables have numeric values, but there are a few categorical variables describing the county's Type (e.g. Type_2015_Recreation_NO - whether the county mainly relies on recreation industry; RuralUrbanContinuumCode2013 - where the county lands on the Rural-urban continuum). Covid_intervention describes each county's measures towards covid. The variables are dates on which the county stopped and resumed "gathering", "public schools", "travel ban", "entertainment" and etc.
+    The third dataset, covid_rate, is extremely long. Because each observation is one day, and there is daily data for all the counties in all the US states from January 2020 to Feburary 2021 (for some counties, there is only data available for part of the timecourse).
+    
 ## COVID case trend
 
 It is crucial to decide the right granularity for visualization and analysis. We will compare daily vs weekly total new cases by state and we will see it is hard to interpret daily report.
 
 i) Plot **new** COVID cases in NY, WA and FL by state and by day. Any irregular pattern? What is the biggest problem of using single day data? 
+```{r echo=TRUE, warning = FALSE}
+covid_rate_sub <- covid_rate %>% filter(State=="New York" | State == "Washington" | State == "Florida") 
+day_state <- covid_rate_sub %>% group_by(State,date) %>% summarize(cum_cases_state = sum(cum_cases))
+```
+
+    As shown in the r-code above, we first created a subset of covid_rate containing only NY, WA and FL. In order to get a new column "new cases by day by state", we will first need to sum cumylative cases in all the counties in the state to get the cumulative cases of the state. We did that by group covid_rate by state and by date then get a summarized sum. 
+```{r}
+diff_day<-rep(0,1112) #1112 is the length of daily_increment_State
+daily_increment <- cbind(day_state, diff_day)
+split_by_state <- split(daily_increment, daily_increment$State)
+split_by_state <- lapply(split_by_state, function(x) transform(x, diff_day= c(NA, diff(cum_cases_state))))
+daily_increment <- do.call(rbind, split_by_state)
+```
+    
+    Then, in order to get the difference of cum_cases(cumulative total of cases) between consecutive days, we first created a column "diff_day", filled it with zeros and appended it to our long dataset daily_increment_State. We then splitted the long dataset by State into 3 shorter datasets about each State. For each of the 3 States, we filled the first grid of 'diff_day' column with N/A since we don't have data about the date prior to the first day listed, and the following grids with the difference between cum_cases  in this row and cum_cases in the previous row with the diff() function.  An important assumption is that, within data of each state, covid-rate is already sorted by date. Conveniently, this assumption is already satisfied. 
+```{r}
+daily_increment_plot <- daily_increment %>%
+  ggplot(aes(x = date, y = diff_day, col = State)) + 
+  geom_line() + 
+  geom_point() +
+  theme_bw() +
+ggtitle("Daily New COVID cases in NY, FL and WA")
+ggplotly(daily_increment_plot +
+           theme(legend.position = "none"))
+```
+    
+    The biggest difficulty to interpretation that the new cases by day graph presented is that the lines are not "smooth" - too many zigzagging. This means that this visualization might be presenting disturbances/noises that might distract our focus. For example, there is a big notable up-down for Florida between January 1st 2021 and January 2nd 2021. It is currently saying that there is 0 new cases on January 1st 2021 and over 30,000 new cases on January 2nd 2021. It is probably due to the fact that people didn't record the new cases on January 1st 2021, but that big jump is indeed disturbing.
+    A separate problem is that in the current analysis, we didn't take into account the population differences by the three states at all. So we wouldn't be able to tease apart how much of the smaller peak of Washington is due its smaller base population.
 
 ii) Create **weekly new** cases per 100k `weekly_case_per100k`. Plot the spaghetti plots of `weekly_case_per100k` by state. Use `TotalPopEst2019` as population.
+```{r}
+week_state <- covid_rate %>% group_by(State,week)%>% mutate(cum_cases_week_state = sum(cum_cases))%>% ungroup() %>%
+  group_by(State) %>% mutate(statePopEst2019 = sum(TotalPopEst2019))%>% ungroup() %>% 
+  select(State,week, cum_cases_week_state, statePopEst2019) %>% distinct(State, week, .keep_all = TRUE)
+diff_week<-rep(0,2518) #2518 is the length of week_state
+weekly_increment <- cbind(week_state, diff_week)
+split_by_state <- split(weekly_increment, weekly_increment$State)
+split_by_state <- lapply(split_by_state, function(x) transform(x, diff_week= c(NA, diff(cum_cases_week_state))))
+weekly_increment <- do.call(rbind, split_by_state)
+weekly_increment <- weekly_increment %>% mutate(weekly_new_per100k = diff_week * 100000 /statePopEst2019 )
+```
+
+    In order to create the variable "weekly new per 100k", we first get cumulative total of every week for every state. We also need to summarize the total population in 2019 of all the counties in a state to get the population of a state. Once we get weekly cumulative and population by state, we repeat the process that we used to obtain daily new cases above to get weekly new cases of very state. The new variable "weekly new per 100k" for every state would be weekly new cases divided by the state's total population then multiplying 100,000.   
+
+```{r}
+weekly_increment_plot <- weekly_increment %>%
+  ggplot(aes(x = week, y = weekly_new_per100k, group = State, col = State)) + 
+  geom_line() + 
+  geom_point() +
+  theme_bw()+
+  ggtitle("Weekly New COVID Cases per 100k")+
+  theme(legend.position = "none")
+weekly_increment_plot
+```
+    
+    We noticed that during earlier weeks of, there appeared to be negative weekly new cases, which is probably due to misreport. In order to more clearly examine the trend visually, we exclude all data point that showed negative weekly increase.
+```{r}
+weekly_increment_excl <- weekly_increment %>% filter(weekly_new_per100k >= 0)
+```
+
+    
+```{r}
+weekly_increment_plot_excl <- weekly_increment_excl %>%
+  ggplot(aes(x = week, y = weekly_new_per100k, col = State)) + 
+  geom_line() + 
+  geom_point() +
+  theme_bw()+
+  ggtitle("Weekly New COVID Cases per 100k")
+ggplotly(weekly_increment_plot_excl +
+           theme(legend.position = "none"))
+```
+    
 
 iii) Summarize the COVID case trend among states based on the plot in ii). What could be the possible reasons to explain the variabilities? 
 
+```{r}
+summary(covid_intervention)
+```
+
+    The first pattern that attracts our attention is the apparent three peaks starting respectively around week 12 (April 5-11 2020), week 25 (July 5-11 2020) and week 43 (Nov 8-14 2020). The last peak is the most appalling in scale and has not fully subsided till the end of data collection. On a coarse level, all states follow this pattern.
+    The first peak might be the natural culmination since the first detection of the pandemic without intervention. Through summarizing the first variables in covid_intervention, we would notice the mean date for the start of lockdown are all in the latter half of March. This probably explains why the first peak is in early April - as travel and interaction has been largely restricted since the first wave of lock down , weekly new cases begin to decrease.
+    However, weekly new cases began to be on the rise after it hit bottom in early June (week 21). Many factors may have contributed to this rise: after George Floyd's death on May 26, 2020, there was a peak of demonstrations and protests related to Black Life Matters in late May and early June in US. As shown in the following image from the report "Demonstrations & Political Violence in America: New Data for Summer 2020" by The Armed Conflict Location & Event Data Project (ACLED), in week of June 7, corresponding to our week 21, demonstrations related to Black Life Matters hit a peak, of more than 3000 movements in that week. On top of the series of heated civil movement, we can also learn from the summary of covid_intervention that most states issued policies of "lockdown rollback" in mid-late May. It also contributed to the rise of weekly new cases two weeks later.
+
+!["Demonstrations & Political Violence in America: New Data for Summer 2020, The Armed Conflict Location & Event Data Project (ACLED)."](/blm_protest.png)
+
+    Finally,the second peak passed and hit bottom in week 30, presumably as a consequence of another round of lockdown policies as well as subsided number of movement related to Black Life Matter. However, quickly it was on the rise again towards the biggest third peak. We don't have any lockdown data that could shed insights on the development of the third peak. However, we hypothesized that the large number of political gatherings leading to the presidential election contributed to the sharp growth. The fact that the third wave hit peak in the election week provided support for this hypothesis - since as the results settled, cases began to wind down. And we attributed the subsequent smaller peak on the way down in week 51 as resonance of winter holiday travel.
+    
 iv) (Optional) Use `covid_intervention` to see whether the effectiveness of lockdown in flattening the curve.
+```{r}
+
+```
+
 
 ## COVID death trend
 
