@@ -1,9 +1,9 @@
 ---
 title: "COVID-19 Case Study"
 author:
-- Group Member 1
-- Group Member 2
-- Group Member 3
+- Yiran Chen 
+- Caroline Harrison
+- Henry Mao
 date: 'Due: 11:59PM,  March 14, 2021'
 output:
   html_document:
@@ -123,7 +123,7 @@ daily_increment <- do.call(rbind, split_by_state)
     
     Then, in order to get the difference of cum_cases(cumulative total of cases) between consecutive days, we first created a column "diff_day", filled it with zeros and appended it to our long dataset daily_increment_State. We then splitted the long dataset by State into 3 shorter datasets about each State. For each of the 3 States, we filled the first grid of 'diff_day' column with N/A since we don't have data about the date prior to the first day listed, and the following grids with the difference between cum_cases  in this row and cum_cases in the previous row with the diff() function.  An important assumption is that, within data of each state, covid-rate is already sorted by date. Conveniently, this assumption is already satisfied. 
     
-```{r echo=TRUE}
+```{r echo=TRUE, results='markup'}
 daily_increment_plot <- daily_increment %>%
   ggplot(aes(x = date, y = diff_day, col = State)) + 
   geom_line() + 
@@ -169,7 +169,7 @@ weekly_increment_excl <- weekly_increment %>% filter(weekly_new_per100k >= 0)
 ```
 
     
-```{r echo=TRUE}
+```{r echo=TRUE, results='markup'}
 weekly_increment_plot_excl <- weekly_increment_excl %>%
   ggplot(aes(x = week, y = weekly_new_per100k, col = State)) + 
   geom_line() + 
