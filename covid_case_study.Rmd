@@ -294,30 +294,6 @@ ggplotly(monthly.plots[[12]])
 ii) Use `plotly` to animate the monthly maps in i). Does it reveal any systematic way to capture the dynamic changes among states?
 
 ```{r}
-#dot map
-data.s.plot <- data.s %>% 
-  mutate(hover =  paste(state, '<br>', 
-                        'mortality rate', round(mortality.rate, 2)))
-
-fig <-plot_geo(data.s.plot, locationmode = 'USA-states')
-fig <- fig %>% add_trace(
-    text = ~hover, locations = ~state,
-    color=~mortality.rate, colors = 'Blues', locationmode = "USA-states", frame= ~date, type = "choropleth",
-    zmin = min_mort_col, zmax = max_mort_col
-  )
-fig <- fig %>% colorbar(title = "Mortality rate of state")
-fig <- fig %>% layout(
-    title = 'Mortality rate of state',
-    geo = g,
-    hoverlabel = list(bgcolor="white")
-  ) 
-
-
-ggplotly(fig)
-```
-
-```{r}
-#get map dataset
 data.s$full <- tolower(data.s$full)
 data.s <- data.s %>%
   rename(region=full)
@@ -332,18 +308,42 @@ head(map)
 
 
 ```{r}
-#gif 
-library(gganimate)
-p <- ggplot(map,aes(x = long,
-                          y = lat,
-                          group = group), inherit.aes=FALSE) +
-   geom_polygon(data = map, color = "black", aes(fill = mortality.rate)) +
-   scale_fill_continuous(limits = c(0, max_mort_col), low="white", high="blue",
-                     name = "Mortality Rate Per 100k") +
-                     theme_void() + coord_fixed(1.3) + transition_manual(frame = date) + labs(title = 'Date {current_frame}')
- 
-animate(p, height = 715, width = 600, fps=100, nframes = 100 * 12, renderer=gifski_renderer())
+data.s.plot <- data.s %>% 
+  mutate(hover =  paste(state, '<br>', 
+                        'mortality rate', round(mortality.rate, 2))) %>%
+  mutate(date =  lubridate::month(date) )
+
+data.s.plot$date <- ifelse(data.s.plot$date %in% c(1,2), data.s.plot$date + 10, data.s.plot$date - 2)
+
+# give state boundaries a white border
+l <- list(color = toRGB("white"), width = 2)
+# specify some map projection/options
+g <- list(
+  scope = 'usa',
+  projection = list(type = 'albers usa'),
+  showlakes = TRUE,
+  lakecolor = toRGB('white')
+)
+
+fig <-plot_geo(data.s.plot, locationmode = 'USA-states')
+fig <- fig %>% add_trace(
+    z = ~mortality.rate, text = ~hover, locations = ~state, frame= ~date,
+    color = ~mortality.rate, colors = 'Blues', 
+    zmin = min_mort_col, zmax = max_mort_col
+  )
+fig <- fig %>% colorbar(title = "Mortality rate of state")
+fig <- fig %>% layout(
+    title = 'Cumulative Mortality Rate of State: March 2020 - Feb 2021',
+    geo = g,
+    hoverlabel = list(bgcolor="white")
+  ) %>%
+  animation_slider(
+    currentvalue = list(prefix = "Month: ")
+  )
+
+fig
 ```
+
 
 # COVID factor
 
