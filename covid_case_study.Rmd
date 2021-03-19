@@ -209,6 +209,17 @@ ii) Use `plotly` to animate the monthly maps in i). Does it reveal any systemati
 We now try to build a good parsimonious model to find possible factors related to death rate on county level. Let us not take time series into account for the moment and use the total number as of *Feb 1, 2021*.
 
 i) Create the response variable `total_death_per100k` as the total of number of COVID deaths per 100k by *Feb 1, 2021*. We suggest to take log transformation as `log_total_death_per100k = log(total_death_per100k + 1)`. Merge `total_death_per100k` to `county_data` for the following analysis.
+```{r}
+covid_death <- covid_rate %>% filter(date == "2021-02-01") %>% mutate(total_death_per100k = cum_deaths / TotalPopEst2019 * 100000) %>%
+  mutate(log_total_death_per100k= log(total_death_per100k + 1))
+
+
+
+covid_death <- covid_death %>% merge(county_data, by="FIPS", all.x = TRUE) %>% select(-FIPS, -date, -week, -cum_cases, -cum_deaths,-County.x, -County.y, -State.x, -TotalPopEst2019.x, -total_death_per100k)
+
+#remove all NAs
+covid_death <- na.omit(covid_death)
+```
 
 ii) Select possible variables in `county_data` as covariates. We provide `county_data_sub`, a subset variables from `county_data`, for you to get started. Please add any potential variables as you wish. 
 
@@ -221,9 +232,64 @@ county_data_sub <- county_data %>%
   select(County, State, FIPS, Deep_Pov_All, PovertyAllAgesPct, PerCapitaInc, UnempRate2019, PctEmpFIRE, PctEmpConstruction, PctEmpTrans, PctEmpMining, PctEmpTrade, PctEmpInformation, PctEmpAgriculture, PctEmpManufacturing, PctEmpServices, PopDensity2010, OwnHomePct, Age65AndOlderPct2010, TotalPop25Plus, Under18Pct2010, Ed2HSDiplomaOnlyPct, Ed3SomeCollegePct, Ed4AssocDegreePct, Ed5CollegePlusPct, ForeignBornPct, Net_International_Migration_Rate_2010_2019, NetMigrationRate1019, NaturalChangeRate1019, TotalPopEst2019, WhiteNonHispanicPct2010, NativeAmericanNonHispanicPct2010, BlackNonHispanicPct2010, AsianNonHispanicPct2010, HispanicPct2010, Type_2015_Update, RuralUrbanContinuumCode2013, UrbanInfluenceCode2013, Perpov_1980_0711, HiCreativeClass2000, HiAmenity, Retirement_Destination_2015_Update)
 ```
 
+
 iii) Use LASSO to choose a parsimonious model with all available sensible county-level information. **Force in State** in the process. Why we need to force in State?
 
+
+```{r}
+install.packages("glmnet")
+library(glmnet)
+```
+
+
+```{r}
+#Step 1: Prepare design matrix
+Y <- data.frame(unclass(covid_death))[,1] # extract Y
+X <- model.matrix(log_total_death_per100k~., data=covid_death)[, -1] # take the first column's of 1 out
+dim(X)
+length(Y)
+colnames(X)[1:50]
+
+```
+
+```{r}
+#Step 2: Find x's output from LASSO with min cross-validation error
+set.seed(10)  # to control the randomness in K folds 
+
+fit.death.cv <- cv.glmnet(X, Y, alpha=1, nfolds=10, intercept = T, penalty.factor = c(rep(0, 48),rep(1,205)))
+coef.min <- coef(fit.death.cv, s="lambda.min")  #s=c("lambda.1se","lambda.min") or lambda value
+coef.min <- coef.min[which(coef.min !=0),]   # get the non=zero coefficients
+var.min <- rownames(as.matrix(coef.min))[50:141] # output the names  dim(as.matrix(coef.min))
+var.min
+```
+```{r}
+plot(fit.death.cv)
+```
+```{r}
+coef.1se <- coef(fit.death.cv, s="lambda.1se")  #s=c("lambda.1se","lambda.min") or lambda value
+coef.1se <- coef.1se[which(coef.1se !=0),]   # get the non=zero coefficients
+rownames(as.matrix(coef.1se))
+```
+
 iv) Use `Cp` or BIC to fine tune the LASSO model from iii). Again **force in State** in the process. 
+```{r}
+fit.1se.lm <- lm(log_total_death_per100k~State.y+PopChangeRate1819+PopChangeRate1019+Age65AndOlderPct2010+NonHispanicWhitePopChangeRate0010+Ed1LessThanHSPct+Ed5CollegePlusPct+FemaleHHPct+HH65PlusAlonePct+PctEmpConstruction+RecreationDependent2000, data=covid_death)  # debiased or relaxed LASSO
+summary(fit.1se.lm) 
+```
+```{r}
+covid_death_df <-data.frame(unclass(covid_death))
+covid_death_sub <-  covid_death_df[,c("log_total_death_per100k",var.min)] # get a subset with response and LASSO output
+covid_death_sub <- covid_death_df %>% select(c("log_total_death_per100k",var.min))
+#names(data.fl.sub)
+install.packages("leaps")
+library(leaps)
+fit.final.1 <- regsubsets(log_total_death_per100k ~., nvmax = 15, method = "forward", covid_death_sub)
+```
+
+```{r}
+class(var.min)
+```
+
 
 v) If necessary, reduce the model from iv) to a final model with all variables being siginificant at 0.05 level. Are the linear model assumptions all reasonably met?
 
