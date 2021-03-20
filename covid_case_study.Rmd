@@ -408,18 +408,235 @@ covid_factor[which(is.na(covid_factor$State))]
 covid_factor[which(is.na(covid_factor$FemaleHHPct))]
 #There are no missing values in our final selection of variables
 ```
-
 iii) Use LASSO to choose a parsimonious model with all available sensible county-level information. **Force in State** in the process. Why we need to force in State?
+```{r}
+covid_factor <- na.omit(covid_factor) ## One last check for NAs
+Y.covid <- as.matrix(covid_factor[, 5])
+X.covid <- model.matrix(log_total_death_per100k~., covid_factor[,-7])
+nrow(Y.covid) == nrow(X.covid)
+sum(is.na(Y.covid))
+sum(is.na(X.covid))
+colnames(X.covid)
+```
 
+```{r}
+pacman::p_load(glmnet, leaps, tidyverse, mapproj)
+```
+```{r}
+first.fit <- glmnet(X.covid, Y.covid, alpha=1)
+str(first.fit)
+first.fit$lambda
+print(first.fit)
+
+plot(first.fit, label=TRUE)
+```
+```{r}
+## Cross Valdation Step
+set.seed(10)
+cvfit <- cv.glmnet(X.covid, Y.covid, alpha=1, nfold=10, penalty.factor = c(rep(1,5), rep(0, 50), rep(1, ncol(X.covid)-55)))
+summary(cvfit)
+# cvfit$cvm
+# cvfit$lambda.min
+# cvfit$nzero
+plot(cvfit$lambda)
+coef.min <- coef(cvfit, s="lambda.min")
+var.min <- coef.min@Dimnames[[1]][coef.min@i+1][-1]
+var.min
+plot(log(cvfit$lambda), cvfit$cvm, xlab=expression(log(lambda)))
+```
+    The plot here shows that the min cv error occurs around log lambda = -6.
+    
+```{r}
+lambda.1se <- coef(cvfit, s="lambda.1se")
+lambda.1se <- lambda.1se[which(data.frame(lambda.1se[,1]) != 0),]
+lambda.1se
+lambda.min <- coef(cvfit, s="lambda.min")
+lambda.min <- lambda.min[which(data.frame(lambda.min[,1]) != 0),]
+lambda.min
+length(lambda.1se)
+plot(cvfit)
+```
+
+    We can see that the model reported by the LASSO lambda.1se contains 52 variables. An observation from the list is that not all states are included: only a handful of states such as Arizona, LA, NJ are included. Interestly enough, the US states with most populations are almost all included. This is not surprising as a very infectious virus like COVID will infect and kill faster in highly populated states. However, in order to answer if state is actually a significant variable, we need to obtain demographic information about those that are easily infected (children and the elderly), the medical infrastructure (states with more population tend to have more problem with limited medical resource) and and many other informations. It is insufficient to examine the state as a variable alone, since it is correlated with so many other information relevant to our model prediction.
+  
+```{r}
+## Fitting model using glmnet
+lasso.fit.covid <- glmnet(X.covid, Y.covid, alpha = 1)
+names(lasso.fit.covid)
+
+lasso.fit.covid$df
+
+length(lasso.fit.covid$lambda)
+```
+```{r}
+
+plot(lasso.fit.covid)
+
+```
+```{r}
+lasso.fit.covid.1se <- glmnet(X.covid, Y.covid, alpha = 1, lambda=cvfit$lambda.1se)
+names(lasso.fit.covid.1se)
+lasso.fit.covid.1se$lambda
+```
+   
+    As our glmnet model report, there are  varibles that non-zero coefficient (excluding the Intercept)), which is around 1/5 of total number of factors we input into the model. The reason we force in state is because we want to see if state is the only non-numeric variable that is significant for geographic demonstration.
+    
 iv) Use `Cp` or BIC to fine tune the LASSO model from iii). Again **force in State** in the process. 
+```{r}
+## Separate out the lambda.1se variables in the new dataframe for lm
+## Get variable names
+variable <- rownames(as.matrix(lambda.1se))
+data_frame_covid <- as.data.frame(X.covid)
+lm.variables <- data_frame_covid %>% select(variable)
+lm.variables <- lm.variables[,-1]
+lm.variables <- cbind(lm.variables, Y.covid)
+## Running Regsubset for CP model selection:
+lm.variables
+reg_result <- regsubsets(log_total_death_per100k ~ ., lm.variables, nvmax = 70, method="forward", force.in=seq(2,51))
 
-v) If necessary, reduce the model from iv) to a final model with all variables being siginificant at 0.05 level. Are the linear model assumptions all reasonably met?
+cp_map <- data.frame("used_number"=seq(length(summary(reg_result)$cp)), "cp_level"=summary(reg_result)$cp)
 
+ggplot(cp_map, aes(x=used_number, y=cp_level)) +
+  geom_point() +
+  labs(title="Number of predictors vs. Cp of Regression 1se lambda")
+```
+    
+    As we can see, with the pre-selected subset of variables, the cp decreases steadily when the number of variable is increased. The convex shape of this graph confirmed that the subset of variables we identified will indeed increase the fitness of overall model when they are all included, so likely our model has reached a local minima for least square error. We noticed that the least-cp number of variable in this case is 60 (50 are states). We will now try the model given by set of variables that procudes the min cvm:
+    
+```{r}
+
+variable <- rownames(as.matrix(lambda.min))
+data_frame_covid_min <- as.data.frame(X.covid)
+lm.variables2 <- data_frame_covid_min %>% select(variable)
+lm.variables2 <- lm.variables2[,-1]
+lm.variables2 <- cbind(lm.variables2, Y.covid)
+## Running Regsubset for CP model selection:
+reg_result2 <- regsubsets(log_total_death_per100k ~ ., lm.variables2, nvmax = 55, method="forward", force.in=seq(2,51))
+
+cp_map2 <- data.frame("used_number"=seq(length(summary(reg_result2)$cp)), "cp_level"=summary(reg_result2)$cp)
+
+ggplot(cp_map2, aes(x=used_number, y=cp_level)) +
+  geom_point() +
+  labs(title="Number of predictors vs. Cp of Regression for min cv condition")
+```
+
+    We first produce two base models using all states and the least-cp condition, the condition studied is whether to use lambda.1se or lambda.min:
+    
+```{r}
+## Selecting the least-cp model:
+min_index <- which.min(summary(reg_result)$cp)
+vars <- coef(reg_result, min_index)
+
+## Select the least-cp model for second condition:
+min_index <- which.min(summary(reg_result2)$cp)
+vars2 <- coef(reg_result2, min_index)
+
+base_variables1 <- names(vars)
+base_variables2 <- names(vars2)
+
+base_variables1 <- paste(base_variables1[-1], collapse = " + ")
+base_variables2<- paste(base_variables2[-1], collapse = " + ")
+## Base model for comparison
+formula_base1 <- as.formula(paste("log_total_death_per100k", "~", base_variables1))
+formula_base2 <- as.formula(paste("log_total_death_per100k", "~", base_variables2))
+
+base_model1 <- lm(formula=formula_base1 ,data=lm.variables)
+base_model2 <- lm(formula=formula_base2 ,data=lm.variables2)
+
+summary(base_model1)
+summary(base_model2)
+```
+    
+    As we can see the two base models with all states has very low level of fitness. We now adjust this new model excluding the requirement for states in the nest question.
+    
+v) If necessary, reduce the model from iv) to a final model with all variables being significant at 0.05 level. Are the linear model assumptions all reasonably met?
+```{r}
+## Some states are insignificant so in this step We will NOT force in all state variables. We will also add interactions.
+
+variable <- rownames(as.matrix(lambda.1se))
+data_frame_covid <- as.data.frame(X.covid)
+lm.variables <- data_frame_covid %>% select(variable)
+lm.variables <- lm.variables[,-1]
+lm.variables <- cbind(lm.variables, Y.covid)
+## Running Regsubset for CP model selection:
+lm.variables
+reg_result <- regsubsets(log_total_death_per100k ~ ., lm.variables , nvmax=55, method="forward")
+min_index <- which.min(summary(reg_result)$cp)
+vars <- coef(reg_result, min_index)
+
+variable <- rownames(as.matrix(lambda.min))
+data_frame_covid_min <- as.data.frame(X.covid)
+lm.variables2 <- data_frame_covid_min %>% select(variable)
+lm.variables2 <- lm.variables2[,-1]
+lm.variables2 <- cbind(lm.variables2, Y.covid)
+lm.variables2
+## Running Regsubset for CP model selection:
+reg_result2 <- regsubsets(log_total_death_per100k ~ ., lm.variables2 , nvmax=55, method="forward")
+min_index <- which.min(summary(reg_result2)$cp)
+vars2 <- coef(reg_result2, min_index)
+
+final_variable <- rownames(as.matrix(vars))
+data_frame_covid <- as.data.frame(X.covid)
+final.lm.variables <- data_frame_covid %>% select(final_variable)
+final.lm.variables <- final.lm.variables[,-1]
+final.lm.variables <- cbind(final.lm.variables, Y.covid)
+
+final_variable2 <- rownames(as.matrix(vars2))
+data_frame_covid2 <- as.data.frame(X.covid)
+final.lm.variables2 <- data_frame_covid2 %>% select(final_variable2)
+final.lm.variables2 <- final.lm.variables2[,-1]
+final.lm.variables2 <- cbind(final.lm.variables2, Y.covid)
+
+model_final <- lm(log_total_death_per100k ~.^2,data=final.lm.variables)
+model_final2 <- lm(log_total_death_per100k ~.,data=final.lm.variables2)
+model_final3 <- lm(log_total_death_per100k ~.^2,data=final.lm.variables2)
+summary(model_final)
+summary(model_final2)
+summary(model_final3)
+```
+    
+    We introduced 3 models: model 1 using the lambda.1se variables, model 2 using the lambda.min variables, and model 3 using lambda.min variables but including two-term interactions. We will use the lambda.min model for comparison. As indicated in the summary, the first model achieves an R^{2} of around 0.37, the second achieves 0.41, and third one a stunning 0.801. However, since the third term includes a lot of insignificant variables, we trim it down here:
+    
+```{r}
+## We pull out variables with given significance interval
+model_final_summary <- summary(model_final3)
+ind <- model_final_summary$coeff[-1,4] <= 0.05
+final_variables <- names(ind)[ind]
+final_variables <- gsub(":", "*", final_variables)
+## Prepare for lm
+final_variables <- paste(final_variables[-1], collapse = " + ")
+formula <- as.formula(paste("log_total_death_per100k", "~", final_variables))
+final_lm <- lm(formula=formula ,data=final.lm.variables2)
+```
+
+    Now we see the new model and test for homoscedasticity using lmtest package:
+
+```{r}
+summary(final_lm)
+plot(final_lm)
+bptest(model_final2)
+```
+
+    As indicated, none of the models above are really good in terms of homoscedasticity, possibly due to the nature of the data. We are able to achieve high fitness through interaction variables
+    
 vi) It has been shown that COVID affects elderly the most. It is also claimed that the COVID death rate among African Americans and Latinxs is higher. Does your analysis support these arguments?
+
+    When we talk about COVID death rate of particular group of people we need to take a look at 1) the coefficient of variables related to age and race and 2) the statistical significance of these two variables. In both models, the variables of interest are Under18Pct2010 and Age65AndOlderPct2010. We noticed that first, both are highly significant variable indicated by extremely low p-value in both models, and second, the coefficient for Under18Pct2010 is higher than Age65AndOlderPct2010. This indicates that, in fact, younger people tends to be affected the most. This makes sense, because they don't stay indoor. There is so far no observed evidence that African Americans and Latinxs are affected more than other race group since it is excluded based on statistical significance. However, the WhiteNonHispanicPct2010 variable shows that this race variable is signficant. From which we can infer that African Americans and Latinxs are more affected (and maybe positive correlation).
 
 vii) Based on your final model, summarize your findings. In particular, summarize the state effect controlling for others. Provide intervention recommendations to policy makers to reduce COVID death rate.
 
-viii) What else can we do to improve our model? What other important information we may have missed? 
+    We noticed that some states have positive coefficients and some negative. Our interpretation is that, the spread of the virus is either contained-well, or, due to demographic reasons, limited. The inclusion of these negative coefficient states, constraining all other variables, will reduce the log death rate related to covid. On the other hand, the states with significant positive coefficients increases the overall log death rate controlling all othe variables.
+    
+    Here are our suggestion:
+    1) People should stay in door in order to contains the virus and avoid traveling.
+    2) Encourage people not to go out for celebrating holidays, as indicated by our time series analysis.
+    3) Income and race are significantly relevant variables in our analysis. This suggests that we should focus on how to convince low income, african american/latino races to follow virus prevention guidelines. 
+
+viii) What else can we do to improve our model? What other important information we may have missed?
+
+    We can also take a look at political activism in different states, because it looks like states with higher death peaks support Trump over Biden. We probably also want to take a look at travel data for each state, such as the flights and total number of passengers arriving through airplanes, since the environment on flights really faciliates the spread of the virus. We should probably also consider temperature/weather data, since lower temperature may be associated with weaker immunity, which will contribute to faster spread. 
+    
+    In terms of building a parsimonious model, we certainly need to deal with the heteroscedasticity and multicollinearity in our data. The later we would use PCA, but the downside of PCA is that, our original variables become linearly combined such that they lost their practical meaning, but it will definitely address the multicollinearity issue. For the heteroskedasticity, we could devide each sample by its sample standard deviation before feeding it into the model. The problem of heteroskedasticity is caused by having increasing or decreasing variance when going over the fitted values, which are variances uncaptured by original model. So if we divide each sample by its std before feeding, the expected variance of residual will be constant = 1. In this way, the problem is addressed. This will require us to use Weighted Least Square, whereby we weight each sample by its own std. 
 
 
 # Appendix 1: Data description {-}
